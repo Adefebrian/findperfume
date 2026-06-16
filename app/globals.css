@@ -1,0 +1,57 @@
+@import "tailwindcss";
+
+:root {
+  --cream: #FFF8F0;
+  --cream-2: #FBEFE2;
+  --coffee-dark: #4B2E2B;
+  --coffee-mid: #8C5A3C;
+  --coffee-soft: #B98E6A;
+  --line: #EAD9C6;
+  --card: #FFFDFB;
+}
+
+@theme inline {
+  --color-cream: var(--cream);
+  --color-cream-2: var(--cream-2);
+  --color-coffee-dark: var(--coffee-dark);
+  --color-coffee-mid: var(--coffee-mid);
+  --color-coffee-soft: var(--coffee-soft);
+  --color-line: var(--line);
+  --color-card: var(--card);
+  --font-sans: var(--font-geist-sans);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  background: var(--cream);
+  color: var(--coffee-dark);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: var(--coffee-mid); color: var(--cream); }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--cream); }
+::-webkit-scrollbar-thumb { background: var(--coffee-soft); border-radius: 6px; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.rise { animation: rise .5s cubic-bezier(.22,.61,.36,1) both; }
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, #f1e4d4 25%, #f8efe3 37%, #f1e4d4 63%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+@keyframes spin360 { to { transform: rotate(360deg); } }
+.spin { animation: spin360 .9s linear infinite; }
