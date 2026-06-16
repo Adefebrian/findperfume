@@ -1,0 +1,7 @@
+findperfume.db
+findperfume.db-wal
+findperfume.db-shm
+turso_import.sql
+_chunks
+*.py
+_turso_check.py

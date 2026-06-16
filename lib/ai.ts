@@ -137,19 +137,73 @@ export async function parseQuery(userText: string): Promise<ParsedPrefs> {
   } catch (e) {
     console.error("parseQuery failed", e);
   }
-  // fallback: naive keyword split
-  return normalizePrefs(
-    {
-      gender: "any",
-      keywords: userText.split(/\s+/).slice(0, 8),
-      accords: [],
-      notes: [],
-      mood: [],
-      intensity: "any",
-      summary: userText,
-    },
-    userText
-  );
+  // fallback: rule-based local parse (handles ID + EN vibe words -> english search terms)
+  return normalizePrefs(localParse(userText), userText);
+}
+
+// Lightweight offline parser used when the AI gateway is unavailable / rate-limited.
+// Maps common Indonesian & English scent/personality words to English search terms,
+// so DB retrieval stays relevant even without the LLM.
+const VIBE_MAP: Record<string, string[]> = {
+  // freshness
+  segar: ["Fresh", "Citrus"], fresh: ["Fresh"], citrus: ["Citrus"], jeruk: ["Citrus"],
+  aquatic: ["Aquatic"], laut: ["Aquatic", "Marine"], ocean: ["Aquatic"],
+  // sweet / gourmand
+  manis: ["Sweet"], sweet: ["Sweet"], vanilla: ["Vanilla", "Sweet"], vanila: ["Vanilla"],
+  cokelat: ["Chocolate", "Gourmand"], kopi: ["Coffee"], coffee: ["Coffee"],
+  karamel: ["Caramel"], gourmand: ["Gourmand"], madu: ["Honey"],
+  // woody / warm
+  woody: ["Woody"], kayu: ["Woody"], cedar: ["Cedarwood"], sandalwood: ["Sandalwood"],
+  oud: ["Oud"], hangat: ["Warm Spicy", "Amber"], warm: ["Warm Spicy"], amber: ["Amber"],
+  // floral
+  floral: ["Floral"], bunga: ["Floral"], mawar: ["Rose"], rose: ["Rose"],
+  melati: ["Jasmine"], jasmine: ["Jasmine"], lavender: ["Lavender"],
+  // spicy / smoky / leather
+  spicy: ["Spicy"], pedas: ["Spicy"], rempah: ["Spicy"], smoky: ["Smoky"],
+  asap: ["Smoky"], leather: ["Leather"], kulit: ["Leather"], tembakau: ["Tobacco"],
+  // powdery / clean / musky
+  powdery: ["Powdery"], bedak: ["Powdery"], musk: ["Musk"], bersih: ["Clean", "Soapy"],
+  // personality / occasion (mood)
+  elegan: ["Sophisticated"], misterius: ["Mysterious"], malam: ["Night"], night: ["Night"],
+  percaya: ["Confident"], confident: ["Confident"], romantis: ["Romantic"], romantic: ["Romantic"],
+  kerja: ["Office"], office: ["Office"], kantor: ["Office"], "sehari-hari": ["Daily"],
+  daily: ["Daily"], kencan: ["Date"], date: ["Date"], santai: ["Casual"], seksi: ["Seductive"],
+};
+
+function localParse(text: string): Partial<ParsedPrefs> {
+  const lower = text.toLowerCase();
+  let gender: ParsedPrefs["gender"] = "any";
+  if (/\b(cowok|pria|laki|lelaki|men|man|male|maskulin|masculine)\b/.test(lower)) gender = "male";
+  else if (/\b(cewek|wanita|perempuan|women|woman|female|feminin|feminine)\b/.test(lower)) gender = "female";
+  else if (/\b(unisex|netral)\b/.test(lower)) gender = "unisex";
+
+  const accords = new Set<string>();
+  const mood: string[] = [];
+  for (const [word, mapped] of Object.entries(VIBE_MAP)) {
+    if (lower.includes(word)) {
+      for (const m of mapped) {
+        // mood-ish descriptors go to mood, scent families to accords
+        if (["Night","Confident","Romantic","Office","Daily","Date","Casual","Seductive","Sophisticated","Mysterious"].includes(m))
+          mood.push(m);
+        else accords.add(m);
+      }
+    }
+  }
+  const keywords = Array.from(new Set(Array.from(accords).concat(mood)));
+  // if nothing matched, fall back to meaningful words (drop stopwords)
+  if (!keywords.length) {
+    const stop = new Set(["the","for","and","yang","untuk","dan","aku","saya","ingin","suka","dengan","di","ke","a","an"]);
+    keywords.push(...text.split(/\s+/).filter((w) => w.length > 2 && !stop.has(w.toLowerCase())).slice(0, 8));
+  }
+  return {
+    gender,
+    keywords,
+    accords: Array.from(accords),
+    notes: [],
+    mood,
+    intensity: "any",
+    summary: text,
+  };
 }
 
 function normalizePrefs(p: Partial<ParsedPrefs>, raw: string): ParsedPrefs {

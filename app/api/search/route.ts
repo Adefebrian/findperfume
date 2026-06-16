@@ -87,27 +87,39 @@ export async function POST(request: Request) {
         })
         .filter((x): x is SearchResult => x !== null);
     } else {
-      // AI ranking unavailable -> graceful fallback to popularity-ordered top 8
-      results = candidates.slice(0, 8).map((c, i) => ({
-        id: c.id,
-        rank: i + 1,
-        score: Math.round((c.rating_scent ?? 7) * 10),
-        reason:
-          "Rekomendasi populer yang cocok dengan kata kunci pencarianmu (peringkat AI sedang sibuk).",
-        match_tags: c.accords.slice(0, 3),
-        name: c.name,
-        brand: c.brand,
-        year: c.year,
-        gender: c.gender,
-        accords: c.accords,
-        notes: { top: c.top, heart: c.heart, base: c.base },
-        rating_scent: c.rating_scent,
-        scent_count: c.scent_count,
-        rating_longevity: c.rating_longevity,
-        rating_sillage: c.rating_sillage,
-        image: c.image,
-        url: c.url,
-      }));
+      // AI ranking unavailable -> graceful fallback: popularity + keyword match,
+      // with a concrete (non-AI) reason built from the perfume's own accords.
+      const want = new Set(
+        [...prefs.accords, ...prefs.mood].map((s) => s.toLowerCase())
+      );
+      results = candidates.slice(0, 8).map((c, i) => {
+        const hits = c.accords.filter((a) => want.has(a.toLowerCase()));
+        const accTxt = c.accords.slice(0, 3).join(", ");
+        const reason = hits.length
+          ? `Cocok karena karakter ${hits.join(" & ")}-nya sesuai dengan yang kamu cari, didukung nuansa ${accTxt}.`
+          : `Pilihan populer dengan karakter ${accTxt}${
+              c.rating_scent ? ` dan rating aroma ${c.rating_scent.toFixed(1)}` : ""
+            } yang relevan dengan pencarianmu.`;
+        return {
+          id: c.id,
+          rank: i + 1,
+          score: Math.round((c.rating_scent ?? 7) * 10),
+          reason,
+          match_tags: c.accords.slice(0, 3),
+          name: c.name,
+          brand: c.brand,
+          year: c.year,
+          gender: c.gender,
+          accords: c.accords,
+          notes: { top: c.top, heart: c.heart, base: c.base },
+          rating_scent: c.rating_scent,
+          scent_count: c.scent_count,
+          rating_longevity: c.rating_longevity,
+          rating_sillage: c.rating_sillage,
+          image: c.image,
+          url: c.url,
+        };
+      });
     }
 
     return Response.json({ prefs, results });
