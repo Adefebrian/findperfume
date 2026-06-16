@@ -1,4 +1,4 @@
-// AI router for Findperfume — talks to the Dahono gateway.
+// AI router for Findperfume. Talks to the Dahono gateway.
 // Model roles (chosen by measured performance):
 //   kimi-k2.6     (~1.6s)  -> fast intent parsing (query -> structured prefs)
 //   qwen3.7-max   (~18s)   -> ranking + reasoning (primary, smartest)
@@ -234,10 +234,11 @@ const RANK_SYS = `You are the senior fragrance advisor for "Findperfume".
 Given a user's need and a list of candidate perfumes (with notes, accords, ratings),
 pick and RANK the best matches. Score each 0-100 for how well it fits the user's
 personality/need (consider accords, notes, mood fit, ratings, intensity, season).
-Write the "reason" in warm, natural INDONESIAN — explain concretely WHY it suits them
-(reference their personality/need + the perfume's notes/character). 1-2 sentences.
+Write the "reason" in clear, natural ENGLISH. Explain concretely WHY it suits them
+(reference their personality/need plus the perfume's notes/character). 1-2 sentences.
+Do NOT translate perfume names, brands, notes, or accords; keep all data exactly as given.
 Return ONLY strict JSON:
-{"results":[{"id":<candidate id>,"score":<0-100 int>,"reason":"<indonesian>","match_tags":["..",".."]}]}
+{"results":[{"id":<candidate id>,"score":<0-100 int>,"reason":"<english>","match_tags":["..",".."]}]}
 Rank from highest score to lowest. Return the top 8. Only use ids from the candidates.`;
 
 export async function rankCandidates(

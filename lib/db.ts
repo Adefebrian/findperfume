@@ -24,6 +24,7 @@ export interface PerfumeRow {
   description: string | null;
   accords: string; // JSON array
   accords_txt: string;
+  notes_json: string; // JSON {top:[{n,i}],heart,base}
   top_notes: string;
   heart_notes: string;
   base_notes: string;

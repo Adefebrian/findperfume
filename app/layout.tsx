@@ -8,9 +8,9 @@ const geistSans = Geist({
 });
 
 export const metadata: Metadata = {
-  title: "Findperfume — Temukan parfum terbaik untukmu",
+  title: "Findperfume - Find your signature scent",
   description:
-    "Findperfume memakai AI untuk merekomendasikan parfum terbaik sesuai kepribadian & kebutuhanmu dari 199.000+ parfum. Hasil di-ranking, diberi skor, dan dijelaskan kenapa cocok.",
+    "Findperfume uses AI to recommend the best perfumes for your personality and needs from 199,000+ fragrances. Results are ranked, scored, and explained.",
   icons: { icon: "/favicon.svg" },
 };
 
@@ -18,7 +18,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="id" className={`${geistSans.variable} h-full`}>
+    <html lang="en" className={`${geistSans.variable} h-full`}>
       <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
