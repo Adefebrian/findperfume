@@ -2,8 +2,8 @@ import { db } from "@/lib/db";
 
 export const runtime = "nodejs";
 
-const SELECT = `id, name, brand, year, gender, accords, notes_json, rating_scent,
-  scent_count, image, url, slug`;
+const SELECT = `p.id, p.name, p.brand, p.year, p.gender, p.accords, p.notes_json, p.rating_scent,
+  p.scent_count, p.image, p.url, p.slug`;
 
 interface Row {
   [k: string]: unknown;
@@ -71,29 +71,38 @@ export async function GET(request: Request) {
     const perPage = 24;
     const offset = (page - 1) * perPage;
 
+    const orderBy =
+      sort === "rating"
+        ? "COALESCE(p.rating_scent,0) DESC, COALESCE(p.scent_count,0) DESC"
+        : sort === "year"
+        ? "COALESCE(p.year,0) DESC"
+        : "COALESCE(p.popularity,0) DESC";
+
     const where: string[] = ["1=1"];
     const args: (string | number)[] = [];
     if (brand) {
-      where.push("brand = ?");
+      where.push("p.brand = ?");
       args.push(brand);
     }
-    if (accord) {
-      where.push("accords_txt LIKE ?");
-      args.push(`%${accord}%`);
-    }
     if (gender && gender !== "any") {
-      where.push("gender = ?");
+      where.push("p.gender = ?");
       args.push(gender);
     }
-    const orderBy =
-      sort === "rating"
-        ? "COALESCE(rating_scent,0) DESC, COALESCE(scent_count,0) DESC"
-        : sort === "year"
-        ? "COALESCE(year,0) DESC"
-        : "COALESCE(popularity,0) DESC";
 
-    const whereSql = where.join(" AND ");
-    const listSql = `SELECT ${SELECT} FROM perfumes WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+    let listSql: string;
+    if (accord) {
+      // Use the FTS index (fast) instead of a full-table LIKE scan.
+      where.push("perfumes_fts MATCH ?");
+      const whereSql = where.join(" AND ");
+      listSql = `SELECT ${SELECT} FROM perfumes_fts
+        JOIN perfumes p ON p.id = perfumes_fts.rowid
+        WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+      args.push(`accords_txt:"${accord.replace(/"/g, "")}"`);
+    } else {
+      const whereSql = where.join(" AND ");
+      listSql = `SELECT ${SELECT} FROM perfumes p
+        WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
+    }
     const res = await client.execute({ sql: listSql, args: [...args, perPage, offset] });
 
     return Response.json({
