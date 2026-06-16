@@ -73,10 +73,10 @@ export async function GET(request: Request) {
 
     const orderBy =
       sort === "rating"
-        ? "COALESCE(p.rating_scent,0) DESC, COALESCE(p.scent_count,0) DESC"
+        ? "p.rating_scent DESC"
         : sort === "year"
-        ? "COALESCE(p.year,0) DESC"
-        : "COALESCE(p.popularity,0) DESC";
+        ? "p.year DESC"
+        : "p.popularity DESC";
 
     const where: string[] = ["1=1"];
     const args: (string | number)[] = [];
