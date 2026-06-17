@@ -31,18 +31,42 @@ interface ChatOpts {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  // Total wall-clock budget across the WHOLE fallback chain. Once exceeded,
+  // chatChain stops trying new models and gives up so the caller can fall back.
+  deadlineMs?: number;
 }
+
+// Smallest window worth a gateway round-trip; below this we abandon rather than
+// start a model call that will just get killed mid-flight.
+const MIN_MODEL_WINDOW_MS = 4000;
 
 // Try the whole MODEL_CHAIN in order until one returns non-empty content.
 // Used so a single gateway/balance/rate error on one model auto-falls-through.
+//
+// CRITICAL: this is bounded by a TOTAL deadline (opts.deadlineMs), not just a
+// per-model timeout. Without it, 4 models x 30s = 120s > the route's 90s
+// maxDuration, so Vercel killed the function with a 504 BEFORE parseQuery's
+// catch could run localParse. The total budget guarantees we bail in time for
+// the local fallback to produce a result.
 async function chatChain(
   opts: Omit<ChatOpts, "model">,
   chain: readonly string[] = MODEL_CHAIN
 ): Promise<string> {
+  const start = Date.now();
+  const deadline = opts.deadlineMs ?? Infinity;
   let lastErr: unknown = null;
   for (const model of chain) {
+    const remaining = deadline - (Date.now() - start);
+    if (remaining < MIN_MODEL_WINDOW_MS) {
+      console.error(
+        `chatChain deadline reached (${remaining}ms left), giving up before ${model}`
+      );
+      break;
+    }
+    // Cap this model's call to whatever budget is left.
+    const perModel = Math.min(opts.timeoutMs ?? 60000, remaining);
     try {
-      const out = await chat({ ...opts, model });
+      const out = await chat({ ...opts, model, timeoutMs: perModel });
       if (out && out.trim()) return out;
     } catch (e) {
       lastErr = e;
@@ -200,7 +224,11 @@ export async function parseQuery(userText: string): Promise<ParsedPrefs> {
       user: userText,
       temperature: 0.2,
       maxTokens: 3000,
-      timeoutMs: 30000,
+      // Per-model cap kept tight; total chain budget is the real guard so the
+      // whole parse stays well under the route's 90s maxDuration and leaves
+      // room for retrieval + the localParse fallback if the gateway is slow.
+      timeoutMs: 12000,
+      deadlineMs: 24000,
     });
     const j = extractJSON<ParsedPrefs>(out);
     if (j && Array.isArray(j.keywords)) {
