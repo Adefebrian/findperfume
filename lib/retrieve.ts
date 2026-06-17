@@ -46,25 +46,39 @@ function parseNotes(raw: unknown): NotesStruct {
   }
 }
 
-function ftsTerm(t: string): string {
-  return `"${t.replace(/"/g, "")}"`;
-}
+// Cap the number of LIKE terms. Each term adds OR predicates evaluated per
+// scanned row; ~12 is plenty to express a request.
+const MAX_MATCH_TERMS = 12;
 
-// Cap the OR-match breadth. Each extra term widens the FTS match set; over a
-// 1M+ row index a 15-20 term OR matches a huge fraction of the table, which is
-// the dominant cost of retrieval. The most relevant 10 terms are plenty.
-const MAX_MATCH_TERMS = 10;
+// Build an accord/note LIKE filter from the parsed preferences.
+//
+// We deliberately do NOT use the FTS bm25 index for retrieval: bm25 ranking
+// over a broad OR-match across the 1M+ row index forces FTS5 to score every
+// matching row, which measured ~24s on prod Turso (vs an 860ms ping) and blew
+// past the route's maxDuration -> 504. Instead we walk the popularity index
+// (idx_pop, popularity DESC) top-down and apply these LIKE predicates as a
+// residual filter, so SQLite early-terminates at LIMIT. That returns the most
+// popular on-theme perfumes in ~1s; the deterministic scoreCandidate ranker
+// then refines relevance over the pool.
+function buildLikeFilter(prefs: ParsedPrefs): { clause: string; args: string[] } {
+  const terms = Array.from(
+    new Set(
+      [...prefs.accords, ...prefs.notes, ...prefs.keywords]
+        .map((t) => t.trim().toLowerCase())
+        .filter((t) => t.length > 2)
+    )
+  ).slice(0, MAX_MATCH_TERMS);
+  if (!terms.length) return { clause: "", args: [] };
 
-function buildMatch(prefs: ParsedPrefs): string {
-  const terms = [...prefs.keywords, ...prefs.accords, ...prefs.notes]
-    .map((t) => t.trim())
-    .filter(Boolean);
-  const uniq = Array.from(new Set(terms.map((t) => t.toLowerCase()))).slice(
-    0,
-    MAX_MATCH_TERMS
-  );
-  if (!uniq.length) return "";
-  return uniq.map(ftsTerm).join(" OR ");
+  const parts: string[] = [];
+  const args: string[] = [];
+  for (const t of terms) {
+    // strip LIKE wildcards so the term matches literally (params handle quoting)
+    const pat = `%${t.replace(/[%_]/g, "")}%`;
+    parts.push("lower(p.accords_txt) LIKE ?", "lower(p.notes_txt) LIKE ?");
+    args.push(pat, pat);
+  }
+  return { clause: `AND (${parts.join(" OR ")})`, args };
 }
 
 // Race a libSQL query against a hard timeout. Remote Turso queries have no
@@ -89,7 +103,9 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
     );
   });
 }
-const DB_TIMEOUT_MS = 25000;
+// Healthy queries return in ~1-2s; this only catches a genuinely stalled DB,
+// well under the route's 90s maxDuration so the catch can return cleanly.
+const DB_TIMEOUT_MS = 15000;
 
 function rowToCandidate(raw: Record<string, unknown>): Candidate {
   let accords: string[] = [];
@@ -127,13 +143,17 @@ export async function retrieveCandidates(
   type?: PerfumeType
 ): Promise<Candidate[]> {
   const client = db();
-  const match = buildMatch(prefs);
+  const like = buildLikeFilter(prefs);
 
+  // The leading `+` suppresses idx_gender so the optimizer keeps idx_pop as the
+  // ORDER BY driver (and thus early-terminates at LIMIT). Without it, SQLite
+  // picks idx_gender, then temp-sorts the whole gender-matched set by popularity
+  // — ~350k rows on prod, multi-second.
   const genderFilter =
     prefs.gender && prefs.gender !== "any"
       ? prefs.gender === "unisex"
-        ? `AND p.gender = 'unisex'`
-        : `AND p.gender IN ('${prefs.gender}', 'unisex')`
+        ? `AND +p.gender = 'unisex'`
+        : `AND +p.gender IN ('${prefs.gender}', 'unisex')`
       : "";
 
   // Type (dupe/designer/niche) -> restrict to that type's brand list.
@@ -142,50 +162,24 @@ export async function retrieveCandidates(
     ? `AND lower(p.brand) IN (${brands.map(() => "?").join(",")})`
     : "";
 
-  let rows;
-  if (match) {
-    // Order by bm25 ONLY (FTS5-native top-k, ~1s). Blending popularity into the
-    // SQL ORDER BY forces SQLite to materialize + sort the entire match set,
-    // which measured 19-22s on prod Turso vs ~1s here. We pull a bounded pool
-    // by relevance, then re-apply the popularity blend in JS over that small
-    // set — same ranking intent, a fraction of the cost.
-    const pool = Math.min(limit * 2, 48);
-    const sql = `
-      SELECT ${SELECT_COLS}, COALESCE(p.popularity,0) AS pop, bm25(perfumes_fts) AS rel
-      FROM perfumes_fts
-      JOIN perfumes p ON p.id = perfumes_fts.rowid
-      WHERE perfumes_fts MATCH ? ${genderFilter} ${brandFilter}
-      ORDER BY bm25(perfumes_fts)
-      LIMIT ?`;
-    const res = await withTimeout(
-      client.execute({ sql, args: [match, ...brands, pool] }),
-      DB_TIMEOUT_MS,
-      "retrieve(fts)"
-    );
-    rows = (res.rows as unknown as Record<string, unknown>[])
-      .map((r) => ({
-        r,
-        blend: (Number(r.pop) || 0) * 0.6 - (Number(r.rel) || 0) * 1.0,
-      }))
-      .sort((a, b) => b.blend - a.blend)
-      .slice(0, limit)
-      .map((x) => x.r);
-  } else {
-    const sql = `
-      SELECT ${SELECT_COLS}
-      FROM perfumes p
-      WHERE 1=1 ${genderFilter} ${brandFilter}
-      ORDER BY COALESCE(p.popularity,0) DESC
-      LIMIT ?`;
-    const res = await withTimeout(
-      client.execute({ sql, args: [...brands, limit] }),
-      DB_TIMEOUT_MS,
-      "retrieve(popularity)"
-    );
-    rows = res.rows;
-  }
+  // `popularity IS NOT NULL` + raw `popularity DESC` (no COALESCE) is what lets
+  // SQLite use idx_pop for ordering and early-terminate at LIMIT. The gender /
+  // brand / accord filters are applied as residuals during the indexed scan.
+  const sql = `
+    SELECT ${SELECT_COLS}
+    FROM perfumes p
+    WHERE p.popularity IS NOT NULL ${genderFilter} ${brandFilter} ${like.clause}
+    ORDER BY p.popularity DESC
+    LIMIT ?`;
+  const res = await withTimeout(
+    client.execute({ sql, args: [...brands, ...like.args, limit] }),
+    DB_TIMEOUT_MS,
+    "retrieve"
+  );
 
-  return rows.map((r) => rowToCandidate(r as unknown as Record<string, unknown>));
+  return res.rows.map((r) =>
+    rowToCandidate(r as unknown as Record<string, unknown>)
+  );
 }
 
 // Compact representation sent to the AI ranker (token-efficient).
