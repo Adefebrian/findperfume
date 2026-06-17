@@ -1,21 +1,27 @@
-// AI router for Findperfume. Talks to the Dahono gateway.
-// Model roles (chosen by measured performance):
-//   kimi-k2.6     (~1.6s)  -> fast intent parsing (query -> structured prefs)
-//   qwen3.7-max   (~18s)   -> ranking + reasoning (primary, smartest)
-//   minimax-m3    (~3.4s)  -> reasoning fallback if qwen is slow/fails
-// NOTE: the gateway sits behind Cloudflare and rejects non-browser User-Agents,
-// so every call sends a browser UA header.
+// AI router for Findperfume. Talks to the OpenCode Zen gateway.
+// Core system: OpenCode Zen free models (OpenAI-compatible gateway).
+// The four requested free models are cycled as a fallback chain; the first
+// that returns non-empty content wins, so any single model being rate-limited
+// or down auto-falls-through to the next.
 
-const BASE = process.env.DAHONO_BASE_URL || "https://gateway.dahono.com/v1";
-const KEY = process.env.DAHONO_API_KEY || "";
-const UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
-  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+import { db } from "./db";
+
+// AI core: OpenCode Zen gateway (OpenAI-compatible).
+const BASE = process.env.ZEN_BASE_URL || "https://opencode.ai/zen/v1";
+const KEY = process.env.ZEN_API_KEY || "";
+
+// Ordered fallback chain across the four requested free models.
+export const MODEL_CHAIN = [
+  "deepseek-v4-flash-free", // fast, clean strict JSON -> primary
+  "minimax-m3-free",
+  "mimo-v2.5-free",
+  "nemotron-3-ultra-free",
+] as const;
 
 export const MODELS = {
-  parse: "dahono/kimi-k2.6",
-  rank: "dahono/minimax-m3",          // fast (~3-16s) + solid reasoning -> primary
-  rankFallback: "dahono/deepseek-v4-flash", // secondary if primary errors
+  parse: MODEL_CHAIN[0],
+  rank: MODEL_CHAIN[0],
+  rankFallback: MODEL_CHAIN[1],
 } as const;
 
 interface ChatOpts {
@@ -25,6 +31,26 @@ interface ChatOpts {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+}
+
+// Try the whole MODEL_CHAIN in order until one returns non-empty content.
+// Used so a single gateway/balance/rate error on one model auto-falls-through.
+async function chatChain(
+  opts: Omit<ChatOpts, "model">,
+  chain: readonly string[] = MODEL_CHAIN
+): Promise<string> {
+  let lastErr: unknown = null;
+  for (const model of chain) {
+    try {
+      const out = await chat({ ...opts, model });
+      if (out && out.trim()) return out;
+    } catch (e) {
+      lastErr = e;
+      console.error(`model ${model} failed, trying next`, String(e).slice(0, 160));
+    }
+  }
+  if (lastErr) throw lastErr;
+  return "";
 }
 
 async function chat(opts: ChatOpts): Promise<string> {
@@ -40,13 +66,15 @@ async function chat(opts: ChatOpts): Promise<string> {
       headers: {
         Authorization: `Bearer ${KEY}`,
         "Content-Type": "application/json",
-        "User-Agent": UA,
       },
       body: JSON.stringify({
         model: opts.model,
         messages,
         temperature: opts.temperature ?? 0.3,
-        max_tokens: opts.maxTokens ?? 2000,
+        // ZEN free models are reasoning models: they spend a few hundred hidden
+        // reasoning_tokens before visible output. A low cap returns EMPTY content
+        // (finish_reason=length). Keep this generous.
+        max_tokens: opts.maxTokens ?? 4000,
       }),
       signal: ctrl.signal,
     });
@@ -100,45 +128,105 @@ export interface ParsedPrefs {
   keywords: string[];      // notes/accords/vibe words for FTS (English)
   accords: string[];       // desired accord families
   notes: string[];         // desired specific notes
+  avoid: string[];         // accords/notes that would be INAPPROPRIATE for this request
   mood: string[];          // personality / occasion descriptors
   season?: string;
   intensity?: "subtle" | "moderate" | "strong" | "any";
   summary: string;         // one-line restatement of what they want
 }
 
-const PARSE_SYS = `You are the intent parser for "Findperfume", a perfume recommendation engine.
-The user writes (in any language) about their personality, mood, occasion, or what kind of scent they want.
-Convert it to STRICT JSON for searching a fragrance database. Translate scent/vibe words to ENGLISH.
+const PARSE_SYS = `You are a world-class EXPERT PERFUMER and fragrance consultant with encyclopedic knowledge of notes, accords, olfactive families, seasonality, occasions, longevity & sillage, and the classic do's and don'ts of fragrance selection.
+
+A user writes (in ANY language) about their personality, mood, occasion, time of day, season, or the kind of scent they want. Infer what they ACTUALLY need and translate it into a precise English search structure. Apply professional reasoning so results are HIGHLY relevant — the recommended notes MUST fit the request.
+
+Olfactive guidance (apply rigorously):
+- NIGHT / evening / date / dinner / club / sensual / seductive -> rich, deep, warm: Amber, Oud, Woody, Spicy, Leather, Tobacco, Incense, Vanilla, Animalic, Resinous; higher intensity & sillage. AVOID light watery/aquatic colognes and sheer citrus.
+- DAY / daytime / office / work / school / daily / casual -> Fresh, Citrus, Aromatic, Green, Aquatic, Clean, Tea, light Floral; moderate, inoffensive sillage. AVOID heavy/cloying/very sweet gourmands, dense Oud, strong Amber for daytime office.
+- SUMMER / hot / beach -> Citrus, Aquatic, Marine, Fresh, Green, light Floral. AVOID heavy resinous, dense Gourmand, Oud.
+- WINTER / cold / rainy -> Amber, Woody, Spicy, Gourmand, Vanilla, Oud, Leather, Incense. AVOID thin sheer citrus as the main theme.
+- GYM / sport / active -> Fresh, Aquatic, Citrus, Aromatic; clean and energetic.
+- WEDDING / formal / elegant / luxury -> refined Floral, Woody, Powdery, Amber, Iris; sophisticated and polished.
+- Personality: confident -> bold Woody/Spicy/Amber; calm/relaxed -> soft Woody/Musk/Clean; romantic -> Floral/Sweet/Powdery; mysterious -> Oud/Incense/dark Woody; playful/youthful -> Fruity/Citrus/Sweet; mature/sophisticated -> Chypre/Woody/Leather.
+Always honor any specific notes the user explicitly names. Use the AVOID list to actively exclude families that would clash with the request (e.g. for a fresh daytime request, avoid: Sweet, Gourmand, Vanilla, Oud).
+
 Return ONLY this JSON, no prose:
 {
   "gender": "male" | "female" | "unisex" | "any",
-  "keywords": ["english fragrance/vibe words for full-text search, 4-10 items"],
-  "accords": ["accord families like Fresh, Woody, Sweet, Citrus, Floral, Spicy, Smoky, Powdery, Gourmand"],
-  "notes": ["specific notes like Vanilla, Bergamot, Oud, Rose, Sandalwood"],
-  "mood": ["personality/occasion descriptors, e.g. confident, romantic, office, night-out"],
+  "keywords": ["8-12 english accord/note/vibe terms for full-text retrieval — the RECOMMENDED profile"],
+  "accords": ["recommended, occasion-appropriate accord families: Fresh, Woody, Sweet, Citrus, Floral, Spicy, Smoky, Powdery, Gourmand, Amber, Aquatic, Leather, Green, Oud"],
+  "notes": ["specific recommended notes: Vanilla, Bergamot, Oud, Rose, Sandalwood, Amber, Vetiver, Jasmine, etc."],
+  "avoid": ["accords/notes that are INAPPROPRIATE for this request"],
+  "mood": ["personality/occasion descriptors: confident, romantic, office, night-out, summer-daily"],
   "season": "spring|summer|fall|winter|any",
   "intensity": "subtle|moderate|strong|any",
-  "summary": "one concise English sentence restating their need"
+  "summary": "one expert sentence describing the ideal scent profile for them"
 }
-If gender unclear, use "any". Be generous with keywords so search finds candidates.`;
+If gender unclear, use "any". Be decisive: pick a coherent, occasion-appropriate profile rather than a generic spread.`;
+
+// Cache AI-parsed prefs by query so repeat / suggestion clicks skip the ~10s
+// free-model call (these are reasoning models; ~10s is their floor).
+let _parseCacheReady = false;
+async function ensureParseCache(): Promise<void> {
+  if (_parseCacheReady) return;
+  await db().execute(
+    `CREATE TABLE IF NOT EXISTS parse_cache (q TEXT PRIMARY KEY, prefs TEXT, created_at INTEGER)`
+  );
+  _parseCacheReady = true;
+}
 
 export async function parseQuery(userText: string): Promise<ParsedPrefs> {
+  const key = userText.trim().toLowerCase().slice(0, 300);
+
   try {
-    const out = await chat({
-      model: MODELS.parse,
+    await ensureParseCache();
+    const hit = await db().execute({ sql: `SELECT prefs FROM parse_cache WHERE q = ?`, args: [key] });
+    const cached = hit.rows[0]?.prefs;
+    if (typeof cached === "string") {
+      try {
+        return JSON.parse(cached) as ParsedPrefs;
+      } catch {
+        /* corrupt row -> re-parse */
+      }
+    }
+  } catch {
+    /* cache unavailable -> just parse */
+  }
+
+  let prefs: ParsedPrefs;
+  let fromAI = false;
+  try {
+    const out = await chatChain({
       system: PARSE_SYS,
       user: userText,
       temperature: 0.2,
-      maxTokens: 600,
+      maxTokens: 3000,
       timeoutMs: 30000,
     });
     const j = extractJSON<ParsedPrefs>(out);
-    if (j && Array.isArray(j.keywords)) return normalizePrefs(j, userText);
+    if (j && Array.isArray(j.keywords)) {
+      prefs = normalizePrefs(j, userText);
+      fromAI = true;
+    } else {
+      prefs = normalizePrefs(localParse(userText), userText);
+    }
   } catch (e) {
     console.error("parseQuery failed", e);
+    // fallback: rule-based local parse (ID + EN vibe words -> english terms)
+    prefs = normalizePrefs(localParse(userText), userText);
   }
-  // fallback: rule-based local parse (handles ID + EN vibe words -> english search terms)
-  return normalizePrefs(localParse(userText), userText);
+
+  // Only cache high-quality AI parses, not the rule-based fallback.
+  if (fromAI) {
+    try {
+      await db().execute({
+        sql: `INSERT OR REPLACE INTO parse_cache (q, prefs, created_at) VALUES (?, ?, ?)`,
+        args: [key, JSON.stringify(prefs), Date.now()],
+      });
+    } catch {
+      /* ignore cache write failures */
+    }
+  }
+  return prefs;
 }
 
 // Lightweight offline parser used when the AI gateway is unavailable / rate-limited.
@@ -189,6 +277,25 @@ function localParse(text: string): Partial<ParsedPrefs> {
       }
     }
   }
+  // Occasion / time-of-day expert mapping (recommended accords + what to avoid).
+  const avoid = new Set<string>();
+  let season = "any";
+  const add = (...xs: string[]) => xs.forEach((x) => accords.add(x));
+  const isNight = /\b(malam|night|evening|dinner|date|kencan|club|clubbing|seductive|seksi|sensual|sexy)\b/.test(lower);
+  const isDay = /\b(siang|day|daytime|office|kantor|kerja|work|school|sekolah|daily|sehari-hari|casual|santai)\b/.test(lower);
+  const isSummer = /\b(panas|summer|hot|beach|pantai|gerah)\b/.test(lower);
+  const isWinter = /\b(dingin|winter|cold|hujan|rainy|musim dingin)\b/.test(lower);
+  const isSport = /\b(gym|olahraga|sport|workout|lari)\b/.test(lower);
+  const isFormal = /\b(wedding|nikah|formal|elegan|elegant|mewah|luxury|gala)\b/.test(lower);
+  if (isNight) { add("Amber","Woody","Spicy","Oud","Leather","Vanilla"); ["Aquatic","Marine","Citrus"].forEach((a)=>avoid.add(a)); season = "fall"; }
+  if (isDay) { add("Fresh","Citrus","Aromatic","Green","Aquatic"); ["Sweet","Gourmand","Vanilla","Oud","Amber"].forEach((a)=>avoid.add(a)); }
+  if (isSummer) { add("Citrus","Aquatic","Fresh","Green","Marine"); ["Gourmand","Oud","Amber","Sweet"].forEach((a)=>avoid.add(a)); season = "summer"; }
+  if (isWinter) { add("Amber","Woody","Spicy","Gourmand","Vanilla","Oud"); avoid.add("Citrus"); season = "winter"; }
+  if (isSport) { add("Fresh","Aquatic","Citrus","Aromatic"); ["Gourmand","Oud","Amber"].forEach((a)=>avoid.add(a)); }
+  if (isFormal) { add("Floral","Woody","Powdery","Amber","Iris"); }
+  // a desired accord must never also be in avoid
+  for (const a of accords) avoid.delete(a);
+
   const keywords = Array.from(new Set(Array.from(accords).concat(mood)));
   // if nothing matched, fall back to meaningful words (drop stopwords)
   if (!keywords.length) {
@@ -200,7 +307,9 @@ function localParse(text: string): Partial<ParsedPrefs> {
     keywords,
     accords: Array.from(accords),
     notes: [],
+    avoid: Array.from(avoid),
     mood,
+    season,
     intensity: "any",
     summary: text,
   };
@@ -215,6 +324,7 @@ function normalizePrefs(p: Partial<ParsedPrefs>, raw: string): ParsedPrefs {
     keywords: arr(p.keywords),
     accords: arr(p.accords),
     notes: arr(p.notes),
+    avoid: arr(p.avoid),
     mood: arr(p.mood),
     season: typeof p.season === "string" ? p.season : "any",
     intensity: (p.intensity as ParsedPrefs["intensity"]) || "any",
@@ -230,66 +340,109 @@ export interface RankedItem {
   match_tags: string[]; // short tags e.g. ["Woody", "Office", "Long-lasting"]
 }
 
-const RANK_SYS = `You are the senior fragrance advisor for "Findperfume".
-Given a user's need and a list of candidate perfumes (with notes, accords, ratings),
-pick and RANK the best matches. Score each 0-100 for how well it fits the user's
-personality/need (consider accords, notes, mood fit, ratings, intensity, season).
-Write the "reason" in clear, natural ENGLISH. Explain concretely WHY it suits them
-(reference their personality/need plus the perfume's notes/character). 1-2 sentences.
-Do NOT translate perfume names, brands, notes, or accords; keep all data exactly as given.
-Return ONLY strict JSON:
-{"results":[{"id":<candidate id>,"score":<0-100 int>,"reason":"<english>","match_tags":["..",".."]}]}
-Rank from highest score to lowest. Return the top 8. Only use ids from the candidates.`;
+// HYBRID ranking. The free reasoning models are too slow to rank a whole list
+// inside Vercel limits, and asking them to invent scores risks hallucination.
+// Instead we score every candidate deterministically from its OWN data (accord/
+// note/mood overlap + rating), then make ONE short AI call only to phrase the
+// reasons for the top 8. The AI never picks or scores, so it cannot hallucinate
+// the ranking; it only writes prose grounded in the data we pass it.
+interface AICand {
+  id: number;
+  name: string;
+  brand: string;
+  gender: string | null;
+  accords: string[];
+  notes: string;
+  rating: number | null;
+  votes: number | null;
+}
+
+function scoreCandidate(prefs: ParsedPrefs, c: AICand): { score: number; tags: string[] } {
+  const want = new Set(
+    [...prefs.accords, ...prefs.notes, ...prefs.mood, ...prefs.keywords].map((s) =>
+      s.toLowerCase()
+    )
+  );
+  const avoid = new Set(prefs.avoid.map((s) => s.toLowerCase()));
+  const notesLower = (c.notes || "").toLowerCase();
+  const accLower = c.accords.map((a) => a.toLowerCase());
+
+  const tags: string[] = [];
+  let hits = 0;
+  for (const a of c.accords) {
+    if (want.has(a.toLowerCase())) {
+      hits++;
+      if (tags.length < 4) tags.push(a);
+    }
+  }
+  // partial keyword presence in notes
+  let noteHits = 0;
+  for (const w of want) {
+    if (w.length > 3 && notesLower.includes(w)) noteHits++;
+  }
+
+  // count accords/notes that the expert flagged as inappropriate for this request
+  let avoidHits = 0;
+  for (const w of avoid) {
+    if (!w) continue;
+    if (accLower.includes(w)) avoidHits++;
+    else if (w.length > 3 && notesLower.includes(w)) avoidHits++;
+  }
+
+  const accScore = c.accords.length
+    ? (hits / Math.max(1, Math.min(want.size, c.accords.length))) * 55
+    : 0;
+  const noteScore = Math.min(noteHits * 6, 20);
+  const ratingScore = c.rating ? (c.rating / 10) * 20 : 10;
+  const voteBoost = Math.min((c.votes || 0) / 1000, 1) * 5;
+  // strong penalty so e.g. a sweet gourmand never ranks for a fresh daytime query
+  const avoidPenalty = avoidHits * 18;
+
+  let score = Math.round(accScore + noteScore + ratingScore + voteBoost - avoidPenalty);
+  score = Math.max(20, Math.min(99, score));
+  if (!tags.length) tags.push(...c.accords.slice(0, 3));
+  return { score, tags };
+}
+
+// Grounded, deterministic reason builder. Cites ONLY the item's real accords +
+// notes, so it can never hallucinate or describe a different perfume.
+//
+// We deliberately do NOT make a second AI call here. The free reasoning models
+// spend their whole token budget on hidden reasoning for a multi-item prompt
+// and return empty visible content, which made the fallback chain burn ~45s
+// per search for output we discard. Intent parsing (parseQuery) is where the
+// AI adds value; ranking is deterministic and phrasing is templated.
+function buildReason(prefs: ParsedPrefs, c: AICand, tags: string[]): string {
+  const character = tags.slice(0, 2).join(" and ") || c.accords.slice(0, 2).join(" and ");
+  const realNotes = (c.notes || "")
+    .split(/[/,]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  const fit = prefs.mood[0] || prefs.summary || "what you described";
+  return `A ${character || "well-rounded"} scent${
+    realNotes.length ? ` led by ${realNotes.join(", ")}` : ""
+  }, a fitting match for ${fit}.`;
+}
 
 export async function rankCandidates(
   prefs: ParsedPrefs,
   candidates: Array<Record<string, unknown>>
 ): Promise<RankedItem[]> {
-  const userBlock =
-    `USER NEED: ${prefs.summary}\n` +
-    `gender=${prefs.gender}, mood=${prefs.mood.join(", ")}, ` +
-    `accords=${prefs.accords.join(", ")}, notes=${prefs.notes.join(", ")}, ` +
-    `season=${prefs.season}, intensity=${prefs.intensity}\n\n` +
-    `CANDIDATES (JSON):\n${JSON.stringify(candidates)}`;
+  const cands = candidates as unknown as AICand[];
+  // Deterministic scoring + ranking (instant, grounded, no hallucination).
+  const scored = cands
+    .map((c) => {
+      const { score, tags } = scoreCandidate(prefs, c);
+      return { c, score, tags };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 5);
 
-  const tryModel = async (model: string, timeoutMs: number) => {
-    const out = await chat({
-      model,
-      system: RANK_SYS,
-      user: userBlock,
-      temperature: 0.4,
-      maxTokens: 3500,
-      timeoutMs,
-    });
-    const j = extractJSON<{ results: RankedItem[] }>(out);
-    return j?.results && Array.isArray(j.results) ? j.results : null;
-  };
-
-  try {
-    const r = await tryModel(MODELS.rank, 60000);
-    if (r && r.length) return sanitize(r);
-  } catch (e) {
-    console.error("rank primary failed", e);
-  }
-  try {
-    const r = await tryModel(MODELS.rankFallback, 55000);
-    if (r && r.length) return sanitize(r);
-  } catch (e) {
-    console.error("rank fallback failed", e);
-  }
-  return [];
-}
-
-function sanitize(items: RankedItem[]): RankedItem[] {
-  return items
-    .filter((x) => typeof x.id === "number")
-    .map((x) => ({
-      id: x.id,
-      score: Math.max(0, Math.min(100, Math.round(Number(x.score) || 0))),
-      reason: String(x.reason || "").slice(0, 400),
-      match_tags: Array.isArray(x.match_tags)
-        ? x.match_tags.filter((t) => typeof t === "string").slice(0, 4)
-        : [],
-    }))
-    .sort((a, b) => b.score - a.score);
+  return scored.map(({ c, score, tags }) => ({
+    id: c.id,
+    score,
+    match_tags: tags.slice(0, 4),
+    reason: buildReason(prefs, c, tags),
+  }));
 }

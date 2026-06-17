@@ -1,4 +1,5 @@
 import { db } from "@/lib/db";
+import { brandsForType, isType } from "@/lib/perfumeType";
 
 export const runtime = "nodejs";
 
@@ -35,7 +36,8 @@ function mapRow(r: Row) {
     notes,
     rating_scent: r.rating_scent != null ? Number(r.rating_scent) : null,
     scent_count: r.scent_count != null ? Number(r.scent_count) : null,
-    image: (r.image as string) ?? null,
+    // r.image is corrupt (wrong perfume); resolved separately from url below.
+    image: null as string | null,
     url: (r.url as string) ?? null,
   };
 }
@@ -66,6 +68,7 @@ export async function GET(request: Request) {
     const brand = url.searchParams.get("brand");
     const accord = url.searchParams.get("accord");
     const gender = url.searchParams.get("gender");
+    const typeRaw = url.searchParams.get("type") || "";
     const sort = url.searchParams.get("sort") || "popular";
     const page = Math.max(1, parseInt(url.searchParams.get("page") || "1", 10));
     const perPage = 24;
@@ -88,6 +91,13 @@ export async function GET(request: Request) {
       where.push("p.gender = ?");
       args.push(gender);
     }
+    if (isType(typeRaw)) {
+      const brands = brandsForType(typeRaw);
+      if (brands.length) {
+        where.push(`lower(p.brand) IN (${brands.map(() => "?").join(",")})`);
+        args.push(...brands);
+      }
+    }
 
     let listSql: string;
     if (accord) {
@@ -104,12 +114,10 @@ export async function GET(request: Request) {
         WHERE ${whereSql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`;
     }
     const res = await client.execute({ sql: listSql, args: [...args, perPage, offset] });
+    const items = res.rows.map((r) => mapRow(r as unknown as Row));
 
-    return Response.json({
-      page,
-      perPage,
-      items: res.rows.map((r) => mapRow(r as unknown as Row)),
-    });
+    // Images resolved lazily per-card via /api/image (keeps listing fast).
+    return Response.json({ page, perPage, items });
   } catch (e) {
     console.error("library error", e);
     return Response.json({ error: "Failed to load library" }, { status: 500 });

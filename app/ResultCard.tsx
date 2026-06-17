@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { Icon } from "./Icon";
+import { PerfumeImage } from "./PerfumeImage";
 
 export interface NoteIcon {
   n: string;
@@ -28,8 +29,8 @@ export interface ResultItem {
 }
 
 function ScoreRing({ score, big }: { score: number; big?: boolean }) {
-  const sz = big ? 64 : 52;
-  const r = big ? 27 : 22;
+  const sz = big ? 64 : 46;
+  const r = big ? 27 : 19;
   const c = 2 * Math.PI * r;
   const off = c - (score / 100) * c;
   return (
@@ -51,11 +52,27 @@ function ScoreRing({ score, big }: { score: number; big?: boolean }) {
       </svg>
       <span
         className={`absolute inset-0 grid place-items-center font-bold text-coffee-dark ${
-          big ? "text-lg" : "text-sm"
+          big ? "text-lg" : "text-xs"
         }`}
       >
         {score}
       </span>
+    </div>
+  );
+}
+
+function Chips({ tags, max = 3 }: { tags: string[]; max?: number }) {
+  if (!tags.length) return null;
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {tags.slice(0, max).map((t, i) => (
+        <span
+          key={i}
+          className="rounded-full border border-line bg-cream px-2.5 py-0.5 text-[11px] font-medium text-coffee-mid"
+        >
+          {t}
+        </span>
+      ))}
     </div>
   );
 }
@@ -82,145 +99,141 @@ function NoteChip({ note }: { note: NoteIcon }) {
   );
 }
 
-function NoteRow({ label, notes }: { label: string; notes: NoteIcon[] }) {
-  if (!notes.length) return null;
+function Ratings({ item, className = "" }: { item: ResultItem; className?: string }) {
   return (
-    <div>
-      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-coffee-soft">
-        {label}
-      </p>
-      <div className="flex flex-wrap gap-1.5">
-        {notes.slice(0, 6).map((n, i) => (
-          <NoteChip key={i} note={n} />
-        ))}
-      </div>
+    <div className={`flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-coffee-mid ${className}`}>
+      {item.rating_scent != null && (
+        <span className="inline-flex items-center gap-1">
+          <Icon name="star" size={13} />
+          {item.rating_scent.toFixed(1)}
+          {item.scent_count ? ` (${item.scent_count})` : ""}
+        </span>
+      )}
+      {item.rating_longevity != null && (
+        <span className="inline-flex items-center gap-1">
+          <Icon name="timer" size={13} />
+          {item.rating_longevity.toFixed(1)}
+        </span>
+      )}
+      {item.rating_sillage != null && (
+        <span className="inline-flex items-center gap-1">
+          <Icon name="wind" size={13} />
+          {item.rating_sillage.toFixed(1)}
+        </span>
+      )}
     </div>
   );
 }
 
-export default function ResultCard({ item, index }: { item: ResultItem; index: number }) {
-  const top = item.rank === 1;
+export type Variant = "hero" | "wide" | "tall" | "normal";
+
+function RankBadge({ rank, top }: { rank: number; top: boolean }) {
   return (
-    <article
-      className={`rise group relative flex flex-col overflow-hidden rounded-3xl border border-line bg-card shadow-[0_2px_20px_rgba(75,46,43,0.05)] transition hover:shadow-[0_10px_36px_rgba(75,46,43,0.14)] ${
-        top ? "md:col-span-2 md:row-span-2" : ""
+    <span
+      className={`absolute left-3 top-3 z-10 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold shadow-sm ${
+        top ? "bg-coffee-dark text-cream" : "bg-card/90 text-coffee-mid backdrop-blur"
       }`}
-      style={{ animationDelay: `${index * 70}ms` }}
     >
-      <span
-        className={`absolute left-4 top-4 z-10 inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-bold ${
-          top ? "bg-coffee-dark text-cream" : "bg-cream-2 text-coffee-mid"
-        }`}
-      >
-        {top && <Icon name="trophy" size={13} />}#{item.rank}
-      </span>
+      {top && <Icon name="trophy" size={13} />}#{rank}
+    </span>
+  );
+}
 
-      <div className={top ? "flex flex-col md:flex-row md:gap-6 md:p-6 p-5" : "flex flex-col p-5"}>
-        {/* image */}
-        <div
-          className={`relative mx-auto grid place-items-center overflow-hidden rounded-2xl bg-cream-2 ${
-            top ? "h-56 w-full md:h-72 md:w-72 md:shrink-0" : "mb-4 h-44 w-full"
-          }`}
-        >
-          {item.image ? (
-            <Image
-              src={item.image}
-              alt={`${item.name} by ${item.brand}`}
-              fill
-              unoptimized
-              sizes="(max-width:768px) 100vw, 320px"
-              // blend kills the flat white bottle backdrop into the cream tile
-              className="object-contain p-4 mix-blend-multiply transition duration-500 group-hover:scale-105"
-            />
-          ) : (
-            <Icon name="drop" size={40} className="text-coffee-soft" />
-          )}
+const CARD =
+  "rise group relative flex overflow-hidden rounded-3xl border border-line bg-card shadow-[0_2px_20px_rgba(75,46,43,0.05)] transition duration-300 hover:-translate-y-0.5 hover:shadow-[0_16px_40px_rgba(75,46,43,0.16)]";
+
+export default function ResultCard({
+  item,
+  index,
+  variant = "normal",
+}: {
+  item: ResultItem;
+  index: number;
+  variant?: Variant;
+}) {
+  const delay = { animationDelay: `${index * 60}ms` };
+
+  // HERO — 2x2, vertical, image-dominant.
+  if (variant === "hero") {
+    const hasNotes =
+      item.notes.top.length + item.notes.heart.length + item.notes.base.length > 0;
+    return (
+      <article className={`${CARD} flex-col md:col-span-2 md:row-span-2`} style={delay}>
+        <RankBadge rank={item.rank} top />
+        <div className="relative min-h-0 flex-1 overflow-hidden bg-cream-2">
+          <PerfumeImage
+            id={item.id}
+            name={item.name}
+            brand={item.brand}
+            accords={item.accords}
+            glyph={52}
+            sizes="(max-width:768px) 100vw, 480px"
+          />
         </div>
-
-        {/* body */}
-        <div className="flex flex-1 flex-col">
+        <div className="flex flex-col gap-3 p-5">
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs uppercase tracking-wider text-coffee-soft">
+              <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-coffee-soft">
                 {item.brand}
               </p>
-              <h3
-                className={`mt-0.5 font-semibold leading-tight text-coffee-dark ${
-                  top ? "text-2xl" : "text-lg"
-                }`}
-              >
+              <h3 className="mt-0.5 truncate text-2xl font-semibold leading-tight text-coffee-dark">
                 {item.name}
               </h3>
               <p className="mt-0.5 text-xs text-coffee-soft">
-                {[item.gender, item.year].filter(Boolean).join(" \u00b7 ")}
+                {[item.gender, item.year].filter(Boolean).join(" · ")}
               </p>
             </div>
-            <ScoreRing score={item.score} big={top} />
+            <ScoreRing score={item.score} big />
           </div>
-
-          {item.match_tags.length > 0 && (
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {item.match_tags.map((t, i) => (
-                <span
-                  key={i}
-                  className="rounded-full border border-line bg-cream px-2.5 py-1 text-[11px] font-medium text-coffee-mid"
-                >
-                  {t}
-                </span>
-              ))}
+          <Chips tags={item.match_tags} max={4} />
+          <p className="text-sm leading-relaxed text-coffee-dark/80">{item.reason}</p>
+          {hasNotes && (
+            <div className="flex flex-wrap gap-1.5 border-t border-line pt-3">
+              {[...item.notes.top, ...item.notes.heart, ...item.notes.base]
+                .slice(0, 8)
+                .map((n, i) => (
+                  <NoteChip key={i} note={n} />
+                ))}
             </div>
           )}
-
-          <p
-            className={`mt-3 leading-relaxed text-coffee-dark/80 ${
-              top ? "text-base" : "text-sm"
-            }`}
-          >
-            {item.reason}
-          </p>
-
-          {/* note icons */}
-          {(item.notes.top.length || item.notes.heart.length || item.notes.base.length) > 0 && (
-            <div className="mt-4 space-y-2.5 border-t border-line pt-3">
-              <NoteRow label="Top" notes={item.notes.top} />
-              <NoteRow label="Heart" notes={item.notes.heart} />
-              <NoteRow label="Base" notes={item.notes.base} />
-            </div>
-          )}
-
-          <div className="mt-auto flex flex-wrap items-center gap-x-4 gap-y-1 pt-4 text-xs text-coffee-mid">
-            {item.rating_scent != null && (
-              <span className="inline-flex items-center gap-1">
-                <Icon name="star" size={13} />
-                {item.rating_scent.toFixed(1)}
-                {item.scent_count ? ` (${item.scent_count})` : ""}
-              </span>
-            )}
-            {item.rating_longevity != null && (
-              <span className="inline-flex items-center gap-1">
-                <Icon name="timer" size={13} />
-                {item.rating_longevity.toFixed(1)}
-              </span>
-            )}
-            {item.rating_sillage != null && (
-              <span className="inline-flex items-center gap-1">
-                <Icon name="wind" size={13} />
-                {item.rating_sillage.toFixed(1)}
-              </span>
-            )}
-            {item.url && (
-              <a
-                href={item.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-auto inline-flex items-center gap-1 font-medium text-coffee-mid underline-offset-2 hover:underline"
-              >
-                detail
-                <Icon name="open" size={13} />
-              </a>
-            )}
-          </div>
+          <Ratings item={item} className="mt-auto pt-1" />
         </div>
+      </article>
+    );
+  }
+
+  // WIDE / default — 2x1, horizontal, image-left.
+  return (
+    <article className={`${CARD} flex-row md:col-span-2`} style={delay}>
+      <RankBadge rank={item.rank} top={false} />
+      <div className="relative w-2/5 shrink-0 overflow-hidden bg-cream-2 sm:w-44">
+        <PerfumeImage
+          id={item.id}
+          name={item.name}
+          brand={item.brand}
+          accords={item.accords}
+          pad="p-3"
+          glyph={34}
+          sizes="200px"
+        />
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2 p-4">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[11px] font-medium uppercase tracking-[0.12em] text-coffee-soft">
+              {item.brand}
+            </p>
+            <h3 className="truncate text-base font-semibold leading-tight text-coffee-dark">
+              {item.name}
+            </h3>
+          </div>
+          <ScoreRing score={item.score} />
+        </div>
+        <Chips tags={item.match_tags} max={3} />
+        <p className="line-clamp-2 text-[13px] leading-relaxed text-coffee-dark/80">
+          {item.reason}
+        </p>
+        <Ratings item={item} className="mt-auto" />
       </div>
     </article>
   );

@@ -5,6 +5,7 @@ import {
   type Candidate,
   type NotesStruct,
 } from "@/lib/retrieve";
+import { isType } from "@/lib/perfumeType";
 
 export const runtime = "nodejs";
 export const maxDuration = 90;
@@ -42,16 +43,19 @@ function base(c: Candidate) {
     scent_count: c.scent_count,
     rating_longevity: c.rating_longevity,
     rating_sillage: c.rating_sillage,
-    image: c.image,
+    // c.image is corrupt (wrong perfume); resolved separately from c.url below.
+    image: null as string | null,
     url: c.url,
   };
 }
 
 export async function POST(request: Request) {
   let query = "";
+  let typeRaw = "";
   try {
     const body = await request.json();
     query = (body?.query ?? "").toString().trim();
+    typeRaw = (body?.type ?? "").toString().trim();
   } catch {
     return Response.json({ error: "Invalid body" }, { status: 400 });
   }
@@ -59,10 +63,12 @@ export async function POST(request: Request) {
     return Response.json({ error: "Query too short" }, { status: 400 });
   }
   if (query.length > 1000) query = query.slice(0, 1000);
+  const type = isType(typeRaw) ? typeRaw : undefined;
 
   try {
     const prefs = await parseQuery(query);
-    const candidates = await retrieveCandidates(prefs, 18);
+    // Pull a deeper pool when a type filter is active so ranking still has choices.
+    const candidates = await retrieveCandidates(prefs, type ? 40 : 18, type);
     if (!candidates.length) {
       return Response.json({
         prefs,
@@ -94,7 +100,7 @@ export async function POST(request: Request) {
       const want = new Set(
         prefs.accords.concat(prefs.mood).map((s) => s.toLowerCase())
       );
-      results = candidates.slice(0, 8).map((c, i) => {
+      results = candidates.slice(0, 5).map((c, i) => {
         const hits = c.accords.filter((a) => want.has(a.toLowerCase()));
         const accTxt = c.accords.slice(0, 3).join(", ");
         const reason = hits.length
@@ -112,6 +118,7 @@ export async function POST(request: Request) {
       });
     }
 
+    // Images are resolved lazily per-card via /api/image (keeps search fast).
     return Response.json({ prefs, results });
   } catch (e) {
     console.error("search error", e);

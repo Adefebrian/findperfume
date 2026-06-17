@@ -5,3 +5,9 @@ turso_import.sql
 _chunks
 *.py
 _turso_check.py
+*.db
+Frame 1.svg
+*.log
+scripts/
+.venv/
+.turso/

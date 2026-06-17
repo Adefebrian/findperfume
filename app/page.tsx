@@ -1,24 +1,34 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import ResultCard, { type ResultItem } from "./ResultCard";
+import ResultCard, { type ResultItem, type Variant } from "./ResultCard";
 import { Icon } from "./Icon";
 
-const SUGGESTIONS = [
-  "Confident man who loves elegant, mysterious evenings",
-  "Fresh scent for an active woman, good for daily work",
-  "Sweet warm vanilla and coffee vibe for the rainy season",
-  "Woody and masculine but calm, for meetings",
-  "Romantic floral for a first date",
+const TYPES = [
+  { k: "", label: "All" },
+  { k: "dupe", label: "Dupe" },
+  { k: "designer", label: "Designer" },
+  { k: "niche", label: "Niche" },
 ];
 
 export default function Home() {
   const [query, setQuery] = useState("");
+  const [type, setType] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<ResultItem[] | null>(null);
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
+
+  // Auto-run a search when the page is opened with ?q=... (shareable links).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q) {
+      setQuery(q);
+      search(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function search(q: string) {
     const text = q.trim();
@@ -30,7 +40,7 @@ export default function Home() {
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text }),
+        body: JSON.stringify({ query: text, type: type || undefined }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Search failed");
@@ -49,9 +59,9 @@ export default function Home() {
       <nav className="flex items-center justify-between pt-6">
         <span className="inline-flex items-center gap-2 font-semibold text-coffee-dark">
           <span className="grid h-8 w-8 place-items-center rounded-xl bg-coffee-dark text-cream">
-            <Icon name="coffee" size={18} />
+            <Icon name="perfume" size={18} />
           </span>
-          Find<span className="text-coffee-mid">perfume</span>
+          <span>Find<span className="text-coffee-mid">perfume</span></span>
         </span>
         <Link
           href="/library"
@@ -68,8 +78,9 @@ export default function Home() {
           Find your signature scent
         </h1>
         <p className="mx-auto mt-3 max-w-xl text-sm text-coffee-dark/70 sm:text-base">
-          Describe your personality or your need. Our AI finds the best perfumes
-          from <b>199,000+</b> in the catalog, ranked with a score and a reason.
+          Describe your personality or your need. Our expert-AI perfumer finds the
+          best from <b>1 Million+ perfumes from around the world</b>, ranked with a
+          score and a reason.
         </p>
       </header>
 
@@ -108,22 +119,24 @@ export default function Home() {
           </div>
         </div>
 
-        {!results && !loading && (
-          <div className="mt-4 flex flex-wrap justify-center gap-2">
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => {
-                  setQuery(s);
-                  search(s);
-                }}
-                className="rounded-full border border-line bg-card px-3.5 py-1.5 text-xs text-coffee-mid transition hover:border-coffee-soft hover:bg-cream-2"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        )}
+        {/* Perfume type filter */}
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+          <span className="text-xs font-medium text-coffee-soft">Type</span>
+          {TYPES.map((t) => (
+            <button
+              key={t.k}
+              onClick={() => setType(t.k)}
+              className={`rounded-full border px-3 py-1 text-xs font-medium capitalize transition ${
+                type === t.k
+                  ? "border-coffee-dark bg-coffee-dark text-cream"
+                  : "border-line bg-card text-coffee-mid hover:border-coffee-soft hover:bg-cream-2"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
       </section>
 
       {error && (
@@ -144,38 +157,70 @@ export default function Home() {
           {results.length === 0 ? (
             <p className="text-center text-coffee-mid">No results. Try a different description.</p>
           ) : (
-            <div className="grid auto-rows-auto grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {results.map((item, i) => (
-                <ResultCard key={item.id} item={item} index={i} />
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-4 md:auto-rows-[208px]">
+              {results.slice(0, 5).map((item, i) => (
+                <ResultCard key={item.id} item={item} index={i} variant={resultVariant(i)} />
               ))}
             </div>
           )}
         </section>
       )}
 
-      {!results && !loading && (
-        <p className="mt-16 text-center text-xs text-coffee-soft">
-          Powered by AI: kimi-k2.6, minimax-m3, deepseek-v4-flash
-        </p>
-      )}
+      <footer className="mt-16 flex flex-col items-center gap-2 text-xs text-coffee-soft">
+        <p className="font-medium text-coffee-mid">Made by Brian</p>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+          <a
+            href="https://instagram.com/brianeedsleep"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition hover:text-coffee-mid"
+          >
+            IG @brianeedsleep
+          </a>
+          <a
+            href="https://github.com/adefebrian"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition hover:text-coffee-mid"
+          >
+            github.com/adefebrian
+          </a>
+          <a
+            href="https://adefebrian.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition hover:text-coffee-mid"
+          >
+            adefebrian.com
+          </a>
+        </div>
+      </footer>
     </main>
   );
 }
 
+// 5-card bento on a 4-col grid: #1 is a 2x2 hero, #2-#5 are 2x1 wides.
+// Tiles perfectly (4 + 2+2+2+2 = 12 = 4 cols x 3 rows), no gaps.
+function resultVariant(i: number): Variant {
+  return i === 0 ? "hero" : "wide";
+}
+
 function LoadingBento() {
   return (
-    <div className="mt-10 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      {Array.from({ length: 6 }).map((_, i) => (
+    <div className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-4 md:auto-rows-[208px]">
+      {Array.from({ length: 5 }).map((_, i) => (
         <div
           key={i}
-          className={`rounded-3xl border border-line bg-card p-5 ${
-            i === 0 ? "lg:col-span-2 lg:row-span-2" : ""
+          className={`overflow-hidden rounded-3xl border border-line bg-card ${
+            i === 0 ? "md:col-span-2 md:row-span-2 flex flex-col" : "md:col-span-2 flex flex-row"
           }`}
         >
-          <div className={`skeleton mb-4 w-full rounded-2xl ${i === 0 ? "h-64" : "h-40"}`} />
-          <div className="skeleton mb-2 h-4 w-1/3 rounded" />
-          <div className="skeleton mb-2 h-5 w-2/3 rounded" />
-          <div className="skeleton h-12 w-full rounded" />
+          <div className={`skeleton ${i === 0 ? "min-h-0 flex-1" : "w-2/5 sm:w-44"}`} />
+          <div className="flex flex-1 flex-col gap-2 p-4">
+            <div className="skeleton h-3 w-1/3 rounded" />
+            <div className="skeleton h-5 w-2/3 rounded" />
+            <div className="skeleton h-10 w-full rounded" />
+          </div>
         </div>
       ))}
     </div>

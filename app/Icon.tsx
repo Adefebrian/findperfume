@@ -22,6 +22,9 @@ const PATHS: Record<string, string> = {
   drop: "M12 3.25S6 10 6 14a6 6 0 0 0 12 0c0-4-6-10.75-6-10.75M12 20a4 4 0 0 1-4-4c0-2 2-5.5 4-8c2 2.5 4 6 4 8a4 4 0 0 1-4 4Z",
   trophy:
     "M18 2a1 1 0 0 1 1 1v2h2v2a4 4 0 0 1-4 4h-.34A5 5 0 0 1 13 13.9V17h2a2 2 0 0 1 2 2v2H7v-2a2 2 0 0 1 2-2h2v-3.1A5 5 0 0 1 7.34 11H7a4 4 0 0 1-4-4V5h2V3a1 1 0 0 1 1-1zM5 7a2 2 0 0 0 2 2V7zm14 0h-2v2a2 2 0 0 0 2-2z",
+  // perfume bottle (MDI bottle-tonic) — app logo
+  perfume:
+    "M11 2a1 1 0 0 0-1 1v2.27C8.21 5.61 7 7.17 7 9v10a3 3 0 0 0 3 3h4a3 3 0 0 0 3-3V9c0-1.83-1.21-3.39-3-3.73V3a1 1 0 0 0-1-1h-2m0 2h2v1h-2V4Z",
 };
 
 export function Icon({

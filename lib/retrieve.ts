@@ -1,5 +1,6 @@
 import { db } from "./db";
 import type { ParsedPrefs } from "./ai";
+import { brandsForType, type PerfumeType } from "./perfumeType";
 
 export interface NoteIcon {
   n: string; // name
@@ -90,7 +91,8 @@ const SELECT_COLS = `p.id, p.name, p.brand, p.year, p.gender, p.accords, p.notes
 
 export async function retrieveCandidates(
   prefs: ParsedPrefs,
-  limit = 18
+  limit = 18,
+  type?: PerfumeType
 ): Promise<Candidate[]> {
   const client = db();
   const match = buildMatch(prefs);
@@ -102,25 +104,31 @@ export async function retrieveCandidates(
         : `AND p.gender IN ('${prefs.gender}', 'unisex')`
       : "";
 
+  // Type (dupe/designer/niche) -> restrict to that type's brand list.
+  const brands = type ? brandsForType(type) : [];
+  const brandFilter = brands.length
+    ? `AND lower(p.brand) IN (${brands.map(() => "?").join(",")})`
+    : "";
+
   let rows;
   if (match) {
     const sql = `
       SELECT ${SELECT_COLS}, bm25(perfumes_fts) AS rel
       FROM perfumes_fts
       JOIN perfumes p ON p.id = perfumes_fts.rowid
-      WHERE perfumes_fts MATCH ? ${genderFilter}
+      WHERE perfumes_fts MATCH ? ${genderFilter} ${brandFilter}
       ORDER BY (COALESCE(p.popularity,0) * 0.6) - (rel * 1.0) DESC
       LIMIT ?`;
-    const res = await client.execute({ sql, args: [match, limit] });
+    const res = await client.execute({ sql, args: [match, ...brands, limit] });
     rows = res.rows;
   } else {
     const sql = `
       SELECT ${SELECT_COLS}
       FROM perfumes p
-      WHERE 1=1 ${genderFilter}
+      WHERE 1=1 ${genderFilter} ${brandFilter}
       ORDER BY COALESCE(p.popularity,0) DESC
       LIMIT ?`;
-    const res = await client.execute({ sql, args: [limit] });
+    const res = await client.execute({ sql, args: [...brands, limit] });
     rows = res.rows;
   }
 
