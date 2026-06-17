@@ -50,14 +50,46 @@ function ftsTerm(t: string): string {
   return `"${t.replace(/"/g, "")}"`;
 }
 
+// Cap the OR-match breadth. Each extra term widens the FTS match set; over a
+// 1M+ row index a 15-20 term OR matches a huge fraction of the table, which is
+// the dominant cost of retrieval. The most relevant 10 terms are plenty.
+const MAX_MATCH_TERMS = 10;
+
 function buildMatch(prefs: ParsedPrefs): string {
   const terms = [...prefs.keywords, ...prefs.accords, ...prefs.notes]
     .map((t) => t.trim())
     .filter(Boolean);
-  const uniq = Array.from(new Set(terms.map((t) => t.toLowerCase())));
+  const uniq = Array.from(new Set(terms.map((t) => t.toLowerCase()))).slice(
+    0,
+    MAX_MATCH_TERMS
+  );
   if (!uniq.length) return "";
   return uniq.map(ftsTerm).join(" OR ");
 }
+
+// Race a libSQL query against a hard timeout. Remote Turso queries have no
+// built-in deadline, so a slow/stalled query would otherwise hang until the
+// route's 90s maxDuration and return a 504. On timeout we throw, the route's
+// catch returns a clean error fast, and the function never gets killed.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms}ms`)),
+      ms
+    );
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+const DB_TIMEOUT_MS = 25000;
 
 function rowToCandidate(raw: Record<string, unknown>): Candidate {
   let accords: string[] = [];
@@ -112,15 +144,32 @@ export async function retrieveCandidates(
 
   let rows;
   if (match) {
+    // Order by bm25 ONLY (FTS5-native top-k, ~1s). Blending popularity into the
+    // SQL ORDER BY forces SQLite to materialize + sort the entire match set,
+    // which measured 19-22s on prod Turso vs ~1s here. We pull a bounded pool
+    // by relevance, then re-apply the popularity blend in JS over that small
+    // set — same ranking intent, a fraction of the cost.
+    const pool = Math.min(limit * 2, 48);
     const sql = `
-      SELECT ${SELECT_COLS}, bm25(perfumes_fts) AS rel
+      SELECT ${SELECT_COLS}, COALESCE(p.popularity,0) AS pop, bm25(perfumes_fts) AS rel
       FROM perfumes_fts
       JOIN perfumes p ON p.id = perfumes_fts.rowid
       WHERE perfumes_fts MATCH ? ${genderFilter} ${brandFilter}
-      ORDER BY (COALESCE(p.popularity,0) * 0.6) - (rel * 1.0) DESC
+      ORDER BY bm25(perfumes_fts)
       LIMIT ?`;
-    const res = await client.execute({ sql, args: [match, ...brands, limit] });
-    rows = res.rows;
+    const res = await withTimeout(
+      client.execute({ sql, args: [match, ...brands, pool] }),
+      DB_TIMEOUT_MS,
+      "retrieve(fts)"
+    );
+    rows = (res.rows as unknown as Record<string, unknown>[])
+      .map((r) => ({
+        r,
+        blend: (Number(r.pop) || 0) * 0.6 - (Number(r.rel) || 0) * 1.0,
+      }))
+      .sort((a, b) => b.blend - a.blend)
+      .slice(0, limit)
+      .map((x) => x.r);
   } else {
     const sql = `
       SELECT ${SELECT_COLS}
@@ -128,7 +177,11 @@ export async function retrieveCandidates(
       WHERE 1=1 ${genderFilter} ${brandFilter}
       ORDER BY COALESCE(p.popularity,0) DESC
       LIMIT ?`;
-    const res = await client.execute({ sql, args: [...brands, limit] });
+    const res = await withTimeout(
+      client.execute({ sql, args: [...brands, limit] }),
+      DB_TIMEOUT_MS,
+      "retrieve(popularity)"
+    );
     rows = res.rows;
   }
 
